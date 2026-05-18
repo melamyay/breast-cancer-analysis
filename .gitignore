@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.png
+.DS_Store
+.idea/
+Data/Expression_(Short-read)_Public_26Q1_subsetted.csv
+Data/breast_drug_sensitivity_clean.csv
+Data/breast_drug_long.csv
+Data/breast_clusters.csv
+Data/cluster_drug_means.csv
+Data/kruskal_wallis_results.csv
+Data/posthoc_mannwhitney_results.csv
