@@ -1,17 +1,17 @@
-#  Breast Cancer Drug Sensitivity Analysis
+# Breast Cancer Drug Sensitivity Analysis
 
 Mini-projet Bioinfo/MP — M2  
 Analyse pharmacogénomique des lignées de cancer du sein à partir des données DepMap / cRegMap.
 
 ---
 
-##  Objectif
+## Objectif
 
-Explorer les données de sensibilité aux médicaments (Drug Screen PRISM) pour identifier des traitements ciblés par sous-type moléculaire de cancer du sein.
+Explorer les données de sensibilité aux médicaments (Drug Screen PRISM) pour identifier des traitements ciblés par sous-type moléculaire de cancer du sein, en combinant les données DepMap et la classification cRegMap.
 
 ---
 
-## 📁 Structure du projet
+## Structure du projet
 
 ```
 BREAST_CANCER/
@@ -19,14 +19,16 @@ BREAST_CANCER/
 ├── Data/
 │   ├── Drug_sensitivity_AUC_(PRISM_Repurposing_Secondary_Screen)_subsetted.csv
 │   ├── Subtype_Matrix_Public_26Q1_subsetted-2.csv
-│   └── Inferred_Molecular_Subtypes_Public_26Q1_subsetted-2.csv
+│   ├── Inferred_Molecular_Subtypes_Public_26Q1_subsetted-2.csv
+│   ├── classification_uploadedData.csv      ← sous-types moléculaires (cRegMap)
+│   └── influence_uploadedData.csv           ← scores TF (cRegMap)
 │
-├── pipeline.py          # Script principal 
+├── pipeline.py          # Script principal (étapes 1 à 10)
 ├── .gitignore
 └── README.md
 ```
 
-> ⚠️ Les fichiers générés (clusters, heatmaps, PNG...) ne sont pas versionnés.  
+> ⚠️ Les fichiers générés (PNG, CSV intermédiaires) ne sont pas versionnés.  
 > ⚠️ `Expression_(Short-read)_Public_26Q1_subsetted.csv` (357 Mo) est exclu du repo.
 
 ---
@@ -37,81 +39,112 @@ BREAST_CANCER/
 cd BREAST_CANCER
 python -m venv .venv
 source .venv/bin/activate
-pip install pandas numpy scipy statsmodels scikit-learn matplotlib seaborn
+pip install pandas numpy scipy scikit-learn matplotlib seaborn
 ```
 
 ---
 
-## 🔬 Pipeline actuel
+## Pipeline actuel (`pipeline.py`)
 
-### 1. Chargement des données
-- Lecture des fichiers Drug Screen et Subtype Matrix depuis DepMap
+### 1. Chargement
+Lecture des fichiers Drug Screen, Subtype Matrix et classification cRegMap.
 
-### 2. Filtrage — Lignées cancer du sein
-- Sélection des lignées `BREAST == 1` depuis la Subtype Matrix
-- Nettoyage : suppression des doublons, exclusion des colonnes avec > 50% de valeurs manquantes
+### 2. Filtrage et nettoyage
+Sélection des lignées `BREAST == 1`, suppression des doublons et des colonnes avec > 50% de valeurs manquantes.  
+→ **30 lignées | 1360 médicaments**
 
-### 3. PCA + Clustering K-Means
-- Standardisation des données (StandardScaler)
-- Réduction de dimension (PCA 2 composantes)
-- Clustering K-Means (n_clusters à déterminer via méthode du coude)
+### 3. PCA
+Standardisation + réduction en 2 composantes sur le profil de sensibilité aux médicaments.
 
-### 4. Moyenne AUC par cluster
-- Calcul des AUC moyennes par médicament pour chaque cluster pharmacologique
+### 4. Sous-types moléculaires cRegMap
+Classification des lignées en sous-types biologiques via [brcaregmap](https://brcaregmap-781093644550.europe-west1.run.app/) :
 
-### 5. Top 10 médicaments par cluster
-- Classement des médicaments les plus efficaces (AUC la plus basse) par cluster
+| Sous-type | n lignées |
+|---|---|
+| Luminal | 13 |
+| TNBC-Basal | 10 |
+| TNBC-Mes | 5 |
+| HER2-enriched | 2 |
+| Luminal-infiltrated | 0 |
 
-### 6. Visualisation PCA
-- Scatter plot PCA coloré par cluster avec centroïdes
+### 5. Fusion Drug Screen + sous-types
+Croisement des lignées communes entre le drug screen et la classification cRegMap.  
+Sous-types retenus pour les analyses statistiques (n ≥ 3) : **Luminal, TNBC-Basal, TNBC-Mes**.
 
-### 7. Barplots Top 10
-- Un barplot horizontal par cluster avec valeurs annotées
+### 6. Top 10 médicaments par sous-type
+Classement des médicaments les plus efficaces (AUC la plus basse) par sous-type.
 
-### 8. Heatmap
-- AUC moyennes des meilleurs médicaments par cluster (palette RdYlGn)
+**Exemples de résultats :**
+- TNBC-Basal & TNBC-Mes : TRIPTOLIDE, DOLASTATIN-10, SB-743921
+- Luminal : TRIPTOLIDE, ECHINOMYCIN, ROMIDEPSIN
+- HER2-enriched : METHOTREXATE, CARFILZOMIB, ELESCLOMOL
+
+### 7. PCA colorée par sous-type
+Scatter plot PCA avec couleur par sous-type moléculaire cRegMap.
+
+### 8. Barplots Top 10
+Un barplot horizontal par sous-type avec valeurs d'AUC annotées.
+
+### 9. Heatmap
+AUC moyennes des meilleurs médicaments par sous-type (palette RdYlGn).
+
+### 10. Tests statistiques
+**Kruskal-Wallis** par médicament entre les 3 sous-types retenus.
+
+> ⚠️ Note méthodologique : avec n=30 lignées et 1329 tests, la correction FDR
+> (Benjamini-Hochberg) est trop conservative et ne retient aucun médicament.
+> On retient un seuil strict **p < 0.01** sur la p-value brute,
+> approche justifiée pour les analyses exploratoires sur petites cohortes.
+
+**Résultats :**
+- 1329 médicaments testés
+- **35 médicaments significatifs** (p < 0.01)
+- **68 comparaisons post-hoc** significatives (Mann-Whitney, p < 0.05)
+
+Top médicaments différenciés entre sous-types :
+- DECITABINE (p = 0.0004) — agent déméthylant
+- ADAVOSERTIB, BERZOSERTIB, VE-821 — inhibiteurs ATR/WEE1 (stress réplicatif, pertinents pour TNBC)
+- SCH-900776, LY2603618 — inhibiteurs CHK1
 
 ---
 
 ## ✅ To-do list
 
-### 🔴 Priorité haute (attendu par le prof)
+### 🔴 Priorité haute
 
-- [ ] **Corriger le clustering** — appliquer la méthode du coude pour choisir le bon `n_clusters` (actuellement 28/1/1, le clustering est déséquilibré)
-- [ ] **Intégrer les sous-types moléculaires cRegMap** — utiliser les données de [brcaregmap](https://brcaregmap-781093644550.europe-west1.run.app/) pour classer les lignées en sous-types réels (Luminal A/B, HER2, Basal/TNBC) au lieu d'un clustering purement pharmacologique
-- [ ] **Tests statistiques** — comparer les AUC entre sous-types :
-  - Kruskal-Wallis par médicament
-  - Correction FDR (Benjamini-Hochberg)
-  - Post-hoc Mann-Whitney par paire de clusters
-  - Volcano plot + boxplots top médicaments
+- [x] Filtrage et nettoyage des lignées breast cancer (DepMap)
+- [x] Classification par sous-types moléculaires (cRegMap)
+- [x] PCA + visualisations
+- [x] Top médicaments par sous-type
+- [x] Tests statistiques (Kruskal-Wallis + Mann-Whitney)
+- [ ] **Interprétation biologique** des 35 médicaments significatifs
 
-### 🟠 Priorité moyenne (extensions proposées)
+### 🟠 Extensions
 
-- [ ] **Modèle de Machine Learning** — prédire la réponse aux médicaments à partir des données d'influence des régulateurs de transcription (TF influence depuis cRegMap) :
-  - Régression linéaire / ElasticNet
+- [ ] **Modèle de Machine Learning** — prédire l'AUC à partir des scores TF (`influence_uploadedData.csv`) :
   - Random Forest Regressor
-  - Évaluation : R², RMSE, feature importance
-- [ ] **Interprétation LLM** — utiliser un LLM (GPT / Claude) pour interpréter les résultats et générer des hypothèses biologiques sur les médicaments identifiés
+  - ElasticNet
+  - Évaluation : R², RMSE, feature importance des régulateurs
+- [ ] **Interprétation LLM** — utiliser un LLM pour générer des hypothèses biologiques sur les médicaments identifiés
 
 ### 🟢 Bonus
 
-- [ ] **Application Shiny (R)** — interface interactive pour explorer les résultats :
-  - Sélecteur de cluster / sous-type
+- [ ] **Application Shiny (R)** — interface interactive :
+  - Sélecteur de sous-type moléculaire
   - Affichage dynamique du top N médicaments
   - Heatmap interactive (plotly)
   - Boxplots par médicament sélectionné
-  - Export des résultats en CSV
 
 ---
 
-## 📊 Données sources
+## Données sources
 
 | Fichier | Source | Description |
 |---|---|---|
 | Drug_sensitivity_AUC | [DepMap](https://depmap.org/portal/download/custom/) | AUC des réponses aux médicaments par lignée |
 | Subtype_Matrix | [DepMap](https://depmap.org/portal/download/custom/) | Classification des lignées par type de cancer |
-| Inferred_Molecular_Subtypes | [DepMap](https://depmap.org/portal/download/custom/) | Sous-types moléculaires inférés |
-| cRegMap Breast | [brcaregmap](https://brcaregmap-781093644550.europe-west1.run.app/) | Influence des régulateurs de transcription |
+| classification_uploadedData | [brcaregmap](https://brcaregmap-781093644550.europe-west1.run.app/) | Sous-types moléculaires + probabilités |
+| influence_uploadedData | [brcaregmap](https://brcaregmap-781093644550.europe-west1.run.app/) | Scores d'influence des régulateurs de transcription |
 
 ---
 
