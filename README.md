@@ -23,8 +23,9 @@ BREAST_CANCER/
 │   ├── classification_uploadedData.csv      ← sous-types moléculaires (cRegMap)
 │   └── influence_uploadedData.csv           ← scores TF (cRegMap)
 │
-├── pipeline.py          # Analyse pharmacogénomique (étapes 1 à 10)
+├── pipeline.py          # Analyse pharmacogénomique complète (étapes 1–10)
 ├── machinelearning.py   # Modèles ML (classification + régression)
+├── app.R                # Application Shiny interactive
 ├── .gitignore
 └── README.md
 ```
@@ -36,6 +37,7 @@ BREAST_CANCER/
 
 ## ⚙️ Installation
 
+### Python
 ```bash
 cd BREAST_CANCER
 python -m venv .venv
@@ -43,24 +45,32 @@ source .venv/bin/activate
 pip install pandas numpy scipy scikit-learn matplotlib seaborn
 ```
 
+### R (application Shiny)
+```r
+install.packages(c("shiny", "shinydashboard", "plotly", "DT",
+                   "dplyr", "tidyr", "RColorBrewer", "shinyWidgets"))
+```
+
 ---
 
-## Pipeline principal (`pipeline.py`)
+## Pipeline Python (`pipeline.py`)
 
-### 1. Chargement
-Lecture des fichiers Drug Screen, Subtype Matrix et classification cRegMap.
+| Étape | Description | Résultat |
+|---|---|---|
+| 1 | Chargement Drug Screen + Subtype Matrix | — |
+| 2 | Filtrage lignées BREAST + nettoyage | 30 lignées, 1360 médicaments |
+| 3 | PCA sur profil pharmacologique | 2 composantes |
+| 4 | Sous-types moléculaires cRegMap | 5 sous-types |
+| 5 | Fusion drug screen + sous-types | 30 lignées annotées |
+| 6 | Top 10 médicaments par sous-type | — |
+| 7 | PCA colorée par sous-type | `pca_subtypes_breast.png` |
+| 8 | Barplots Top 10 | `top10_drugs_*.png` |
+| 9 | Heatmap AUC moyennes | `heatmap_top_drugs_subtypes.png` |
+| 10 | Tests statistiques (Kruskal-Wallis + Mann-Whitney) | 35 médicaments significatifs |
 
-### 2. Filtrage et nettoyage
-Sélection des lignées `BREAST == 1`, suppression des doublons et des colonnes avec > 50% de valeurs manquantes.  
-→ **30 lignées | 1360 médicaments**
+**Sous-types identifiés :**
 
-### 3. PCA
-Standardisation + réduction en 2 composantes sur le profil de sensibilité aux médicaments.
-
-### 4. Sous-types moléculaires cRegMap
-Classification des lignées en sous-types biologiques via [brcaregmap](https://brcaregmap-781093644550.europe-west1.run.app/) :
-
-| Sous-type | n lignées |
+| Sous-type | n lignées (drug screen) |
 |---|---|
 | Luminal | 13 |
 | TNBC-Basal | 10 |
@@ -68,46 +78,36 @@ Classification des lignées en sous-types biologiques via [brcaregmap](https://b
 | HER2-enriched | 2 |
 | Luminal-infiltrated | 0 |
 
-### 5. Fusion Drug Screen + sous-types
-Sous-types retenus pour les analyses statistiques (n ≥ 3) : **Luminal, TNBC-Basal, TNBC-Mes**.
+**Top médicaments par sous-type :**
+- **TNBC-Basal** : TRIPTOLIDE (AUC = 0.076), EXATECAN-MESYLATE, DOLASTATIN-10
+- **TNBC-Mes** : TRIPTOLIDE (AUC = 0.098), DOLASTATIN-10, SEPANTRONIUM BROMIDE
+- **Luminal** : TRIPTOLIDE (AUC = 0.205), ECHINOMYCIN, ROMIDEPSIN
+- **HER2-enriched** : METHOTREXATE (AUC = 0.360), CARFILZOMIB, ELESCLOMOL
 
-### 6–9. Visualisations
-- Top 10 médicaments par sous-type (barplots)
-- PCA colorée par sous-type moléculaire
-- Heatmap AUC moyennes
-
-**Exemples de résultats :**
-- TNBC-Basal & TNBC-Mes : TRIPTOLIDE (AUC = 0.076), DOLASTATIN-10, SB-743921
-- Luminal : TRIPTOLIDE (AUC = 0.205), ECHINOMYCIN, ROMIDEPSIN
-- HER2-enriched : METHOTREXATE, CARFILZOMIB, ELESCLOMOL
-
-### 10. Tests statistiques
-**Kruskal-Wallis** par médicament entre les 3 sous-types retenus.
-
-> ⚠️ Note méthodologique : avec n=30 lignées et 1329 tests, la correction FDR est trop
-> conservative. On retient un seuil strict **p < 0.01** sur la p-value brute,
+**Tests statistiques :**
+> Avec n=30 lignées et 1329 tests, la correction FDR est trop conservative.
+> On retient un seuil **p < 0.01** sur la p-value brute (Kruskal-Wallis),
 > approche justifiée pour les analyses exploratoires sur petites cohortes.
 
-**Résultats :**
-- 1329 médicaments testés → **35 significatifs** (p < 0.01)
+- **35 médicaments significatifs** (p < 0.01)
 - **68 comparaisons post-hoc** significatives (Mann-Whitney, p < 0.05)
-- Top médicaments : DECITABINE (p = 0.0004), ADAVOSERTIB, BERZOSERTIB, VE-821, SCH-900776
+- Top : DECITABINE (p = 0.0004), ADAVOSERTIB, BERZOSERTIB, VE-821, SCH-900776
 
 ---
 
-## 🤖 Machine Learning (`machinelearning.py`)
+## Machine Learning (`machinelearning.py`)
 
-Features : **440 scores d'influence de régulateurs de transcription** (TF) issus de cRegMap  
-Validation : **LOO** (Leave-One-Out) pour la classification | **KFold 5** pour la régression
+**Features :** 440 scores d'influence de régulateurs de transcription (TF) — cRegMap  
+**Validation :** LOO (classification) | KFold-5 (régression)
 
 ### Partie A — Prédiction du sous-type moléculaire
 
 | Modèle | Accuracy (LOO) |
 |---|---|
-| Random Forest | **84.5%** |
+| Random Forest | 84.5% |
 | Régression logistique | **85.9%** |
 
-✅ Les scores TF capturent bien l'identité moléculaire des sous-types — cohérent avec la biologie cRegMap.
+✅ Les scores TF capturent bien l'identité moléculaire des sous-types.
 
 ### Partie B — Prédiction de l'AUC par médicament
 
@@ -119,32 +119,29 @@ Validation : **LOO** (Leave-One-Out) pour la classification | **KFold 5** pour l
 | BAY-11-7085 | -1.784 | -1.303 | -5.659 |
 | IDAZOXAN | -0.683 | -4.776 | -0.346 |
 
-> ⚠️ Les R² faibles s'expliquent par la dimensionnalité élevée (440 TF) rapportée
-> au faible effectif (n=30). Ce phénomène est classique en pharmacogénomique sur
-> petites cohortes. LY2603618 (R²=0.298 avec RF) montre le signal le plus prometteur.
+> R² faibles attendus : dimensionnalité élevée (440 TF) vs petit effectif (n=30).
+> LY2603618 (R²=0.298 RF) montre le signal le plus prometteur.
 
 ---
 
-## ✅ To-do list
+## Application Shiny (`app.R`)
 
-### 🔴 Priorité haute
-- [x] Filtrage et nettoyage des lignées breast cancer (DepMap)
-- [x] Classification par sous-types moléculaires (cRegMap)
-- [x] PCA + visualisations
-- [x] Top médicaments par sous-type
-- [x] Tests statistiques (Kruskal-Wallis + Mann-Whitney)
-- [x] ML — classification sous-types (RF + régression logistique)
-- [x] ML — prédiction AUC (RF + ElasticNet + régression linéaire)
+Interface interactive dark mode avec 7 onglets :
 
-### 🟠 Extensions
-- [ ] Interprétation biologique des 35 médicaments significatifs
+| Onglet | Contenu |
+|---|---|
+| Vue d'ensemble | Métriques clés, distribution sous-types, top médicaments significatifs |
+| PCA | Scatter plot interactif, filtre par sous-type, labels optionnels |
+| Top médicaments | Sélecteur de sous-type, slider N, tableau exportable |
+| Heatmap | AUC moyennes, filtres sous-types et N médicaments |
+| Boxplots | Recherche par médicament, p-value KW en temps réel |
+| Tests stat. | Volcano plot, tableau sig_drugs, comparaisons post-hoc |
+| Machine Learning | Heatmap R², interprétation, tableau complet |
 
-### 🟢 Bonus
-- [ ] **Application Shiny (R)** — interface interactive :
-  - Sélecteur de sous-type moléculaire
-  - Affichage dynamique du top N médicaments
-  - Heatmap interactive (plotly)
-  - Boxplots par médicament sélectionné
+**Lancement :**
+```r
+shiny::runApp("app.R")
+```
 
 ---
 
@@ -155,7 +152,7 @@ Validation : **LOO** (Leave-One-Out) pour la classification | **KFold 5** pour l
 | Drug_sensitivity_AUC | [DepMap](https://depmap.org/portal/download/custom/) | AUC des réponses aux médicaments par lignée |
 | Subtype_Matrix | [DepMap](https://depmap.org/portal/download/custom/) | Classification des lignées par type de cancer |
 | classification_uploadedData | [brcaregmap](https://brcaregmap-781093644550.europe-west1.run.app/) | Sous-types moléculaires + probabilités |
-| influence_uploadedData | [brcaregmap](https://brcaregmap-781093644550.europe-west1.run.app/) | Scores d'influence des régulateurs de transcription (440 TF) |
+| influence_uploadedData | [brcaregmap](https://brcaregmap-781093644550.europe-west1.run.app/) | Scores d'influence des 440 régulateurs de transcription |
 
 ---
 
