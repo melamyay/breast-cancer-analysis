@@ -42,16 +42,29 @@ BREAST_CANCER/
 cd BREAST_CANCER
 python -m venv .venv
 source .venv/bin/activate
-pip install pandas numpy scipy scikit-learn matplotlib seaborn
+pip install pandas numpy scipy scikit-learn matplotlib seaborn statsmodels
 ```
 
 ### R (application Shiny)
+
 ```r
-install.packages(c("shiny", "shinydashboard", "plotly", "DT",
-                   "dplyr", "tidyr", "RColorBrewer", "shinyWidgets"))
+install.packages(c("shiny", "shinydashboard", "plotly", "DT", "dplyr", "tidyr", "RColorBrewer", "shinyWidgets"))
 ```
 
 ---
+
+### Lancement
+
+```bash
+# 1. Pipeline d'analyse
+python3 pipeline.py
+ 
+# 2. Machine Learning
+python3 machinelearning.py
+ 
+# 3. Application Shiny
+Rscript -e "shiny::runApp('app.R', launch.browser=TRUE)"
+```
 
 ## Pipeline Python (`pipeline.py`)
 
@@ -79,10 +92,11 @@ install.packages(c("shiny", "shinydashboard", "plotly", "DT",
 | Luminal-infiltrated | 0 |
 
 **Top médicaments par sous-type :**
-- **TNBC-Basal** : TRIPTOLIDE (AUC = 0.076), EXATECAN-MESYLATE, DOLASTATIN-10
-- **TNBC-Mes** : TRIPTOLIDE (AUC = 0.098), DOLASTATIN-10, SEPANTRONIUM BROMIDE
-- **Luminal** : TRIPTOLIDE (AUC = 0.205), ECHINOMYCIN, ROMIDEPSIN
-- **HER2-enriched** : METHOTREXATE (AUC = 0.360), CARFILZOMIB, ELESCLOMOL
+
+- **TNBC-Basal** : TRIPTOLIDE, EXATECAN-MESYLATE, DOLASTATIN-10, MAYTANSINOL-ISOBUTYRATE, ECHINOMYCIN, SN38, SB-743921, GEMCITABINE, ROMIDEPSIN, 10-HYDROXYCAMPTOTHECIN
+- **TNBC-Mes** : TRIPTOLIDE, DOLASTATIN-10, SEPANTRONIUM BROMIDE, SB-743921, MAYTANSINOL-ISOBUTYRATE, SN38, ECHINOMYCIN, GEMCITABINE, EXATECAN-MESYLATE, ROMIDEPSIN
+- **Luminal** : TRIPTOLIDE (AUC = 0.205), ECHINOMYCIN (0.238), ROMIDEPSIN (0.261), SB-743921 (0.265), EXATECAN-MESYLATE (0.360), DOLASTATIN-10 (0.363), OLIGOMYCIN-A (0.366), BGT226 (0.369), SN38 (0.414), MAYTANSINOL-ISOBUTYRATE (0.415)
+- **HER2-enriched** : METHOTREXATE (AUC = 0.360), CARFILZOMIB (0.405), ELESCLOMOL (0.444), VOLASERTIB (0.451), BEZ235 (0.470), DINACICLIB (0.473), PANOBINOSTAT (0.476), ALVOCIDIB (0.477), AUY (0.480), AT13387 (0.487)
 
 **Tests statistiques :**
 > Avec n=30 lignées et 1329 tests, la correction FDR est trop conservative.
@@ -111,16 +125,16 @@ install.packages(c("shiny", "shinydashboard", "plotly", "DT",
 
 ### Partie B — Prédiction de l'AUC par médicament
 
-| Médicament | Random Forest R² | ElasticNet R² | Régression lin. R² |
+| Médicament | ElasticNet | Random Forest | Régression lin. |
 |---|---|---|---|
-| DECITABINE | 0.051 | -0.382 | 0.111 |
-| LY2603618 | **0.298** | -0.187 | -0.111 |
-| VER-49009 | -0.272 | -0.601 | -1.160 |
-| BAY-11-7085 | -1.784 | -1.303 | -5.659 |
-| IDAZOXAN | -0.683 | -4.776 | -0.346 |
+| BAY-11-7085 | -0.098 | -0.005 | -0.056 |
+| DECITABINE | 0.095 | 0.299 | 0.093 |
+| IDAZOXAN | -0.103 | 0.385 | **0.494** |
+| LY2603618 | 0.237 | **0.413** | 0.323 |
+| VER-49009 | -0.098 | 0.369 | 0.290 |
 
 > R² faibles attendus : dimensionnalité élevée (440 TF) vs petit effectif (n=30).
-> LY2603618 (R²=0.298 RF) montre le signal le plus prometteur.
+> Meilleur signal : **IDAZOXAN** (Régression linéaire, R²=0.494) et **LY2603618** (Random Forest, R²=0.413).
 
 ---
 
@@ -160,6 +174,6 @@ shiny::runApp("app.R")
 
 Projet réalisé en binôme 
 
-AMYAY AMAL — [@melamyay]
-COKELAER ALEXIS — [@alexiscokelaer]
+- AMYAY AMAL — [@melamyay]
+- COKELAER ALEXIS — [@alexiscokelaer]
 
