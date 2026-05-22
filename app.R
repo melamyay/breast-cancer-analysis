@@ -17,15 +17,16 @@ library(shinyWidgets)
 # DONNÉES
 # =============================================================================
 
-DATA_DIR <- "Data/"
+DATA_DIR   <- "Data/"
+OUTPUT_DIR <- "Output/"
 
-drug_df       <- read.csv(paste0(DATA_DIR, "breast_drug_sensitivity_clean.csv"), check.names = FALSE)
-subtype_means <- read.csv(paste0(DATA_DIR, "subtype_drug_means.csv"), check.names = FALSE, row.names = 1)
+drug_df       <- read.csv(paste0(OUTPUT_DIR, "breast_drug_sensitivity_clean.csv"), check.names = FALSE)
+subtype_means <- read.csv(paste0(OUTPUT_DIR, "subtype_drug_means.csv"), check.names = FALSE, row.names = 1)
 classif_df    <- read.csv(paste0(DATA_DIR, "classification_uploadedData.csv"))
-kw_df         <- read.csv(paste0(DATA_DIR, "kruskal_wallis_results.csv"))
-sig_drugs     <- read.csv(paste0(DATA_DIR, "significant_drugs.csv"))
-ml_results    <- read.csv(paste0(DATA_DIR, "ml_regression_results.csv"))
-posthoc_df    <- read.csv(paste0(DATA_DIR, "posthoc_mannwhitney_results.csv"))
+kw_df         <- read.csv(paste0(OUTPUT_DIR, "kruskal_wallis_results.csv"))
+sig_drugs     <- read.csv(paste0(OUTPUT_DIR, "significant_drugs.csv"))
+ml_results    <- read.csv(paste0(OUTPUT_DIR, "ml_regression_results.csv"))
+posthoc_df    <- read.csv(paste0(OUTPUT_DIR, "posthoc_mannwhitney_results.csv"))
 
 classif_df <- classif_df %>%
   rename(Cell_Line = Cell.lines, Subtype = cluster) %>%
@@ -143,12 +144,13 @@ ui <- dashboardPage(
                 pour les lignées de cancer du sein, classifiées en sous-types moléculaires
                 via ", strong("cRegMap"), " (brcaregmap)."),
                     p("Pipeline : filtrage DepMap → classification cRegMap → tests statistiques
-                (Kruskal-Wallis, p < 0.01) → Machine Learning (Random Forest, ElasticNet)."),
+                (Kruskal-Wallis + correction FDR Benjamini-Hochberg) → Machine Learning (Random Forest, ElasticNet, Régression linéaire)."),
                     tags$ul(
                       tags$li("30 lignées breast cancer | 1360 médicaments"),
-                      tags$li("5 sous-types moléculaires identifiés"),
-                      tags$li("35 médicaments significativement différenciés entre sous-types"),
-                      tags$li("Classification ML : 85.9% accuracy (régression logistique)")
+                      tags$li("4 sous-types identifiés par cRegMap — 3 retenus pour les tests (Luminal, TNBC-Basal, TNBC-Mes) — HER2 exclu car n=2"),
+                      tags$li("35 médicaments avec p < 0.01 (exploratoire — aucun ne survit au FDR q < 0.05)"),
+                      tags$li("Classification ML : 85.9% accuracy (régression logistique, LOO CV)"),
+                      tags$li("Meilleur R² régression AUC : 0.494 (Idazoxan, Régression linéaire, LOO CV)")
                     ))
               )
       ),
@@ -225,7 +227,7 @@ ui <- dashboardPage(
       # 6. TESTS STAT -----------------------------------------------------------
       tabItem(tabName = "stats",
               fluidRow(
-                box(title = "Médicaments significatifs (p < 0.01, Kruskal-Wallis)",
+                box(title = "Médicaments top 35 (p brute < 0.01, exploratoire — FDR q < 0.05 : aucun significatif)",
                     width = 12, status = "info", solidHeader = TRUE,
                     DTOutput("sig_drugs_table"))
               ),
@@ -244,10 +246,10 @@ ui <- dashboardPage(
               fluidRow(
                 infoBox("Accuracy RF (sous-type)",    "84.5%", icon = icon("robot"),      color = "green"),
                 infoBox("Accuracy Log. (sous-type)",  "85.9%", icon = icon("brain"),      color = "blue"),
-                infoBox("Meilleur R² (LY2603618 RF)", "0.298", icon = icon("chart-line"), color = "orange")
+                infoBox("Meilleur R² (Idazoxan rég. lin.)", "0.494", icon = icon("chart-line"), color = "orange")
               ),
               fluidRow(
-                box(title = "R² par médicament et modèle (5-fold CV)",
+                box(title = "R² par médicament et modèle (LOO CV)",
                     width = 7, status = "primary", solidHeader = TRUE,
                     plotlyOutput("ml_heatmap", height = 400)),
                 box(title = "Interprétation", width = 5, status = "primary", solidHeader = TRUE,
@@ -258,12 +260,13 @@ ui <- dashboardPage(
                 l'identité biologique des sous-types."),
                     hr(),
                     h4("Partie B — Prédiction de l'AUC"),
-                    p("La prédiction reste limitée par la dimensionnalité (440 TF vs n=30 lignées).
-                ", strong("LY2603618"), " montre le signal le plus prometteur (R² = 0.298
-                avec Random Forest). Les R² négatifs indiquent un sur-ajustement classique
-                en haute dimension sur petites cohortes."),
+                    p("Méthode : LOO cross-validation + PCA 15 composantes (ElasticNet, Régression lin.).
+                ", strong("IDAZOXAN"), " montre le meilleur R² global (R² = 0.494, Régression linéaire).
+                ", strong("LY2603618"), " atteint R² = 0.413 en Random Forest — doublement intéressant
+                car c'est aussi le meilleur signal parmi les inhibiteurs de checkpoint ATR/CHK1,
+                convergence entre stats et ML."),
                     hr(),
-                    p(em("Validation : LOO pour classification | KFold-5 pour régression")))
+                    p(em("Validation : LOO pour classification et régression | PCA 15 composantes pour modèles linéaires")))
               ),
               fluidRow(
                 box(title = "Résultats détaillés", width = 12,
@@ -409,29 +412,43 @@ server <- function(input, output, session) {
   
   # Tests stat ----------------------------------------------------------------
   output$sig_drugs_table <- renderDT({
-    sig_drugs %>%
-      select(ShortName, KW_stat, p_value) %>%
-      rename(Médicament = ShortName, `KW stat` = KW_stat, `p-value` = p_value) %>%
-      arrange(`p-value`) %>%
+    df <- sig_drugs %>%
+      select(ShortName, KW_stat, p_value, any_of("p_fdr")) %>%
+      rename(Médicament = ShortName, `KW stat` = KW_stat, `p-value brute` = p_value)
+    if ("p_fdr" %in% colnames(df)) df <- rename(df, `p-value FDR` = p_fdr)
+    df %>%
+      arrange(`p-value brute`) %>%
       datatable(options = list(pageLength = 15), rownames = FALSE) %>%
-      formatRound(columns = c("KW stat", "p-value"), digits = 4)
+      formatRound(columns = intersect(c("KW stat", "p-value brute", "p-value FDR"), colnames(df)),
+                  digits = 4)
   })
   
   output$volcano_plot <- renderPlotly({
+    # Calcul dispersion : std des moyennes AUC par sous-type (comme Python)
+    drug_cols <- colnames(drug_df)[-1]
+    sub3      <- c("Luminal", "TNBC-Basal", "TNBC-Mes")
+    means_mat <- subtype_means[sub3, drug_cols, drop = FALSE]
+    effect_sizes <- apply(means_mat, 2, sd, na.rm = TRUE)
+    
     df <- kw_df %>%
-      mutate(log10p = -log10(p_value), significant = p_value < 0.01)
-    plot_ly(df, x = ~log10p, y = ~KW_stat, color = ~significant,
-            colors = c("FALSE" = "#4a5568", "TRUE" = "#e91e8c"),
+      mutate(
+        log10p      = -log10(p_value),
+        effect_size = effect_sizes[Drug],
+        significant = if ("p_fdr" %in% colnames(kw_df)) p_fdr < 0.05 else FALSE
+      )
+    plot_ly(df, x = ~effect_size, y = ~log10p, color = ~significant,
+            colors = c("FALSE" = "#a8c4e0", "TRUE" = "#e91e8c"),
             type = "scatter", mode = "markers", text = ~ShortName,
-            hovertemplate = "%{text}<br>-log10(p)=%{x:.2f} KW=%{y:.2f}<extra></extra>",
-            marker = list(size = 8, line = list(color = "white", width = 0.5))) %>%
-      add_segments(x = -log10(0.01), xend = -log10(0.01),
-                   y = 0, yend = max(df$KW_stat),
-                   line = list(dash = "dash", color = "#e91e8c", width = 1),
+            hovertemplate = "%{text}<br>Dispersion=%{x:.3f}<br>-log10(p)=%{y:.2f}<extra></extra>",
+            marker = list(size = 7, opacity = 0.6,
+                          line = list(color = "white", width = 0.3))) %>%
+      add_segments(x = 0, xend = max(df$effect_size, na.rm = TRUE),
+                   y = -log10(0.01), yend = -log10(0.01),
+                   line = list(dash = "dash", color = "#aaa", width = 1),
                    showlegend = FALSE) %>%
-      layout(xaxis = list(title = "-log10(p-value)"),
-             yaxis = list(title = "Statistique KW"),
-             legend = list(title = list(text = "p < 0.01")),
+      layout(xaxis = list(title = "Dispersion inter-sous-type (std des moyennes AUC)"),
+             yaxis = list(title = "-log10(p-value)"),
+             legend = list(title = list(text = "FDR q < 0.05")),
              plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)",
              font = list(color = "#e0e0e0"))
   })
@@ -455,7 +472,7 @@ server <- function(input, output, session) {
     rownames(mat) <- pivot$Drug
     plot_ly(x = colnames(mat), y = rownames(mat), z = mat,
             type = "heatmap", colorscale = "RdYlGn", zmin = -1, zmax = 1,
-            colorbar = list(title = "R² (5-fold CV)"),
+            colorbar = list(title = "R² (LOO CV)"),
             hovertemplate = "%{y} — %{x}<br>R² = %{z:.3f}<extra></extra>") %>%
       layout(xaxis = list(title = ""), yaxis = list(title = ""),
              plot_bgcolor = "rgba(0,0,0,0)", paper_bgcolor = "rgba(0,0,0,0)",

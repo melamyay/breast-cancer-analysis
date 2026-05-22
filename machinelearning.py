@@ -13,9 +13,13 @@ from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.linear_model import ElasticNet, LogisticRegression, LinearRegression
 from sklearn.model_selection import cross_val_score, LeaveOneOut
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import r2_score, mean_squared_error, classification_report
+from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.decomposition import PCA
+from sklearn.pipeline import Pipeline
 
-DATA_DIR = Path("Data")
+DATA_DIR   = Path("Data")
+OUTPUT_DIR = Path("Output")
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 sns.set_theme(style="whitegrid", font_scale=1.1)
 PALETTE = "Set2"
@@ -36,41 +40,42 @@ classif_df = classif_df[["Cell.lines", "cluster"]].rename(
     columns={"Cell.lines": "Cell_Line", "cluster": "Subtype"}
 )
 
-# Drug screen
-drug_df       = pd.read_csv(DATA_DIR / "breast_drug_sensitivity_clean.csv")
+# Drug screen — lu depuis Output/ (généré par pipeline.py)
+drug_df       = pd.read_csv(OUTPUT_DIR / "breast_drug_sensitivity_clean.csv")
 cell_line_col = drug_df.columns[0]
 
-# Fusion TF + sous-types + drug screen
+# Fusion TF + sous-types (71 lignées — toutes celles classifiées par cRegMap)
 tf_subtype = influence_df.merge(classif_df, left_index=True, right_on="Cell_Line")
-tf_drug    = influence_df.merge(
+
+# Fusion TF + drug screen (30 lignées — intersection drug screen ∩ cRegMap)
+tf_drug = influence_df.merge(
     drug_df.set_index(cell_line_col),
     left_index=True, right_index=True
 )
 
-print(f"Lignées disponibles pour ML : {tf_subtype.shape[0]}")
-print(f"Features TF                : {influence_df.shape[1]}")
-print(f"\nDistribution des sous-types :")
+print(f"Lignées pour classification (TF seuls)   : {tf_subtype.shape[0]}")
+print(f"Lignées pour régression AUC (TF + drugs) : {tf_drug.shape[0]}")
+print(f"Features TF : {influence_df.shape[1]}")
+print(f"\nDistribution des sous-types (71 lignées cRegMap) :")
 print(tf_subtype["Subtype"].value_counts())
 
 
 # =============================================================================
 # 2. PARTIE A – PRÉDICTION DU SOUS-TYPE MOLÉCULAIRE
-#    Features : scores TF | Cible : Subtype (Luminal, TNBC-Basal, TNBC-Mes…)
+#    Features : scores TF (440) | Cible : Subtype
+#    Utilise les 71 lignées classifiées par cRegMap — pas besoin du drug screen
 # =============================================================================
 
 print("\n" + "="*60)
-print("PARTIE A — Prédiction du sous-type moléculaire")
+print("PARTIE A — Prédiction du sous-type moléculaire (71 lignées)")
 print("="*60)
 
-X_cls = tf_subtype.drop(columns=["Cell_Line", "Subtype"]).values
-y_cls = LabelEncoder().fit_transform(tf_subtype["Subtype"])
-label_names = tf_subtype["Subtype"].unique()
+X_cls    = tf_subtype.drop(columns=["Cell_Line", "Subtype"]).values
+y_cls    = LabelEncoder().fit_transform(tf_subtype["Subtype"])
+loo      = LeaveOneOut()
 
 scaler_cls = StandardScaler()
 X_cls_sc   = scaler_cls.fit_transform(X_cls)
-
-# LOO cross-validation (adapté aux petits échantillons)
-loo = LeaveOneOut()
 
 models_cls = {
     "Random Forest":      RandomForestClassifier(n_estimators=100, random_state=42),
@@ -93,17 +98,15 @@ fi_cls = pd.Series(
     index=influence_df.columns
 ).sort_values(ascending=False).head(20)
 
-# Barplot feature importance
 fig, ax = plt.subplots(figsize=(10, 7))
 fi_cls.sort_values().plot.barh(ax=ax, color="steelblue", edgecolor="white")
 ax.set_title("Top 20 régulateurs prédictifs du sous-type moléculaire\n(Random Forest)",
              fontsize=13, fontweight="bold", pad=12)
 ax.set_xlabel("Importance (Gini)", fontsize=11)
 plt.tight_layout()
-plt.savefig(DATA_DIR / "ml_feature_importance_subtype.png", dpi=300, bbox_inches="tight")
+plt.savefig(OUTPUT_DIR / "ml_feature_importance_subtype.png", dpi=300, bbox_inches="tight")
 plt.show()
 
-# Barplot comparaison des modèles
 fig, ax = plt.subplots(figsize=(7, 4))
 colors = sns.color_palette(PALETTE, n_colors=len(results_cls))
 ax.barh(list(results_cls.keys()), list(results_cls.values()),
@@ -115,38 +118,50 @@ ax.set_xlabel("Accuracy (LOO cross-validation)", fontsize=11)
 ax.set_title("Comparaison des modèles – Prédiction du sous-type",
              fontsize=12, fontweight="bold", pad=12)
 plt.tight_layout()
-plt.savefig(DATA_DIR / "ml_model_comparison_subtype.png", dpi=300, bbox_inches="tight")
+plt.savefig(OUTPUT_DIR / "ml_model_comparison_subtype.png", dpi=300, bbox_inches="tight")
 plt.show()
 
 
 # =============================================================================
-# PARTIE B – Prédiction de l'AUC par médicament (KFold 5)
+# PARTIE B – Prédiction de l'AUC par médicament
+#    Features : scores TF (440) | Cible : AUC drogue
+#    Utilise les 30 lignées avec TF + drug screen disponibles
+#    LOO cross-validation + réduction PCA 15 composantes
 # =============================================================================
 
-from sklearn.model_selection import KFold
+loo_reg = LeaveOneOut()
 
-kf = KFold(n_splits=5, shuffle=True, random_state=42)
-
-kw_df     = pd.read_csv(DATA_DIR / "kruskal_wallis_results.csv")
+kw_df      = pd.read_csv(OUTPUT_DIR / "kruskal_wallis_results.csv")
 top5_drugs = kw_df.nsmallest(5, "p_value")["Drug"].tolist()
 
 X_reg    = influence_df.loc[tf_drug.index].values
 scaler_r = StandardScaler()
 X_reg_sc = scaler_r.fit_transform(X_reg)
 
+N_COMPONENTS = 15
+
 models_reg = {
     "Random Forest":   RandomForestRegressor(n_estimators=100, random_state=42),
-    "ElasticNet":      ElasticNet(max_iter=5000, random_state=42),
-    "Régression lin.": LinearRegression(),
+    "ElasticNet":      Pipeline([
+                           ("pca", PCA(n_components=N_COMPONENTS)),
+                           ("model", ElasticNet(max_iter=5000, random_state=42))
+                       ]),
+    "Régression lin.": Pipeline([
+                           ("pca", PCA(n_components=N_COMPONENTS)),
+                           ("model", LinearRegression())
+                       ]),
 }
 
 all_results = []
+
+print("\n" + "="*60)
+print("PARTIE B — Prédiction de l'AUC (30 lignées, LOO + PCA 15 comp.)")
+print("="*60)
 
 for drug in top5_drugs:
     short  = drug.split(" (")[0]
     y_full = tf_drug[drug].values
 
-    # Filtrer les NaN
     mask  = ~np.isnan(y_full)
     X_ok  = X_reg[mask]
     Xs_ok = X_reg_sc[mask]
@@ -156,11 +171,20 @@ for drug in top5_drugs:
 
     for name, model in models_reg.items():
         X_in = X_ok if name == "Random Forest" else Xs_ok
-        r2   = cross_val_score(model, X_in, y_ok, cv=kf, scoring="r2")
-        rmse = cross_val_score(model, X_in, y_ok, cv=kf,
-                               scoring="neg_mean_squared_error")
-        r2_mean   = r2.mean()
-        rmse_mean = np.sqrt(-rmse.mean())
+        try:
+            y_true_all, y_pred_all = [], []
+            for train_idx, test_idx in loo_reg.split(X_in):
+                model.fit(X_in[train_idx], y_ok[train_idx])
+                y_pred_all.append(model.predict(X_in[test_idx])[0])
+                y_true_all.append(y_ok[test_idx][0])
+            y_true_all = np.array(y_true_all)
+            y_pred_all = np.array(y_pred_all)
+            r2_mean   = r2_score(y_true_all, y_pred_all)
+            rmse_mean = np.sqrt(mean_squared_error(y_true_all, y_pred_all))
+        except Exception as e:
+            print(f"  {name:20s} → Erreur : {e}")
+            r2_mean, rmse_mean = np.nan, np.nan
+
         all_results.append({
             "Drug": short, "Modèle": name,
             "R2_CV": r2_mean, "RMSE_CV": rmse_mean
@@ -168,9 +192,9 @@ for drug in top5_drugs:
         print(f"  {name:20s} → R² = {r2_mean:.3f} | RMSE = {rmse_mean:.4f}")
 
 results_reg = pd.DataFrame(all_results)
-results_reg.to_csv(DATA_DIR / "ml_regression_results.csv", index=False)
+results_reg.to_csv(OUTPUT_DIR / "ml_regression_results.csv", index=False)
 
-# Feature importance RF pour DECITABINE
+# Feature importance RF pour le meilleur médicament
 best_drug  = kw_df.nsmallest(1, "p_value")["Drug"].values[0]
 short_best = best_drug.split(" (")[0]
 y_best     = tf_drug[best_drug].values
@@ -189,7 +213,7 @@ ax.set_title(f"Top 20 régulateurs prédictifs de l'AUC – {short_best}\n(Rando
              fontsize=13, fontweight="bold", pad=12)
 ax.set_xlabel("Importance (MSE)", fontsize=11)
 plt.tight_layout()
-plt.savefig(DATA_DIR / f"ml_feature_importance_{short_best}.png", dpi=300, bbox_inches="tight")
+plt.savefig(OUTPUT_DIR / f"ml_feature_importance_{short_best}.png", dpi=300, bbox_inches="tight")
 plt.show()
 
 # Heatmap R²
@@ -198,14 +222,15 @@ pivot_r2 = results_reg.pivot(index="Drug", columns="Modèle", values="R2_CV")
 fig, ax = plt.subplots(figsize=(10, 5))
 sns.heatmap(pivot_r2, annot=True, fmt=".3f", cmap="RdYlGn",
             linewidths=0.4, linecolor="white",
-            cbar_kws={"label": "R² (5-fold CV)", "shrink": 0.7},
+            cbar_kws={"label": "R² (LOO CV)", "shrink": 0.7},
             vmin=-1, vmax=1, ax=ax)
-ax.set_title("R² 5-fold CV par médicament et modèle\n(vert = bonne prédiction)",
-             fontsize=13, fontweight="bold", pad=12)
+ax.set_title("R² LOO CV par médicament et modèle\n"
+             "(vert = bonne prédiction | PCA 15 composantes pour ElasticNet et Régression lin.)",
+             fontsize=12, fontweight="bold", pad=12)
 ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
 ax.set_xticklabels(ax.get_xticklabels(), rotation=15, ha="right")
 plt.tight_layout()
-plt.savefig(DATA_DIR / "ml_r2_heatmap.png", dpi=300, bbox_inches="tight")
+plt.savefig(OUTPUT_DIR / "ml_r2_heatmap.png", dpi=300, bbox_inches="tight")
 plt.show()
 
-print("\n ML terminé — fichiers sauvegardés dans Data/")
+print("\nML terminé — fichiers sauvegardés dans Output/")
